@@ -24,3 +24,5 @@ env/
 .vscode/
 *.swp
 *.swo
+/history.json
+/config.json
