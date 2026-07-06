@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B站下载工具</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #fb7299;
+            --primary-hover: #fc8bab;
+            --primary-light: rgba(251, 114, 153, 0.1);
+            --bg: #f5f6fa;
+            --card-bg: #ffffff;
+            --text: #1a1a2e;
+            --text-secondary: #6b7280;
+            --border: #e5e7eb;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-lg: 0 10px 25px rgba(0,0,0,0.08);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --transition: 0.2s ease;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .app-container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 24px 20px 60px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 32px 0 24px;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .header h1 .icon {
+            font-size: 32px;
+            color: var(--primary);
+        }
+        .header .subtitle {
+            color: var(--text-secondary);
+            margin-top: 6px;
+            font-size: 14px;
+        }
+
+        /* Tab 切换 */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            padding: 4px;
+            box-shadow: var(--shadow);
+            margin-bottom: 20px;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 10px 20px;
+            border: none;
+            background: transparent;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .tab-btn.active {
+            background: var(--primary);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(251,114,153,0.35);
+        }
+        .tab-btn:hover:not(.active) {
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+
+        /* Card */
+        .card {
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 24px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-title i { color: var(--primary); font-size: 18px; }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 14px;
+        }
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            transition: var(--transition);
+            outline: none;
+            font-family: inherit;
+        }
+        .form-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+        textarea.form-input {
+            resize: vertical;
+            min-height: 80px;
+        }
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 10px 22px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            font-family: inherit;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(251,114,153,0.3);
+        }
+        .btn-secondary {
+            background: #f3f4f6;
+            color: var(--text);
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: #e5e7eb;
+        }
+        .btn-success {
+            background: var(--success);
+            color: #fff;
+        }
+        .btn-danger {
+            background: transparent;
+            color: var(--danger);
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .btn-danger:hover:not(:disabled) {
+            background: rgba(239,68,68,0.08);
+        }
+        .btn-sm {
+            padding: 6px 14px;
+            font-size: 13px;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        /* Toggle Switch */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            cursor: pointer;
+        }
+        .toggle input { display: none; }
+        .toggle-slider {
+            position: absolute;
+            inset: 0;
+            background: #d1d5db;
+            border-radius: 12px;
+            transition: var(--transition);
+        }
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            left: 3px;
+            top: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: var(--transition);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+        }
+        .toggle input:checked + .toggle-slider {
+            background: var(--primary);
+        }
+        .toggle input:checked + .toggle-slider::before {
+            transform: translateX(20px);
+        }
+
+        /* Progress */
+        .task-list { display: flex; flex-direction: column; gap: 10px; }
+        .task-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 16px;
+            background: #f9fafb;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            transition: var(--transition);
+        }
+        .task-item:hover { border-color: #d1d5db; }
+        .task-info { flex: 1; min-width: 0; }
+        .task-url {
+            font-size: 13px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .task-title {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+        .progress-bar-wrap {
+            height: 6px;
+            background: #e5e7eb;
+            border-radius: 3px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), #ff6b9d);
+            border-radius: 3px;
+            transition: width 0.4s ease;
+        }
+        .task-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            display: flex;
+            gap: 12px;
+        }
+        .status-badge {
+            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        .status-queued { background: #f3f4f6; color: #6b7280; }
+        .status-starting { background: #fef3c7; color: #92400e; }
+        .status-downloading { background: #dbeafe; color: #1e40af; }
+        .status-processing { background: #e0e7ff; color: #3730a3; }
+        .status-completed { background: #d1fae5; color: #065f46; }
+        .status-failed { background: #fee2e2; color: #991b1b; }
+
+        /* History Table */
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .history-table th {
+            text-align: left;
+            padding: 10px 12px;
+            color: var(--text-secondary);
+            font-weight: 500;
+            border-bottom: 2px solid var(--border);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .history-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .history-table tr:hover td {
+            background: #f9fafb;
+        }
+        .history-title {
+            max-width: 260px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .history-actions {
+            display: flex;
+            gap: 4px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 48px 20px;
+            color: var(--text-secondary);
+        }
+        .empty-state i {
+            font-size: 48px;
+            color: #d1d5db;
+            display: block;
+            margin-bottom: 12px;
+        }
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(2px);
+        }
+        .modal {
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            padding: 28px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: var(--shadow-lg);
+        }
+        .modal h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .app-container { padding: 12px; }
+            .header h1 { font-size: 22px; }
+            .card { padding: 16px; }
+            .btn-row { flex-direction: column; }
+            .btn-row .btn { width: 100%; }
+            .history-table { font-size: 12px; }
+            .history-table th, .history-table td { padding: 8px; }
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in { animation: fadeIn 0.3s ease; }
+
+        .text-danger { color: var(--danger); }
+        .text-success { color: var(--success); }
+        .text-secondary { color: var(--text-secondary); }
+
+        /* 日志面板 */
+        .log-panel {
+            background: #1a1a2e;
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            margin-top: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+        .log-panel::-webkit-scrollbar {
+            width: 4px;
+        }
+        .log-panel::-webkit-scrollbar-thumb {
+            background: #3a3a5c;
+            border-radius: 2px;
+        }
+        .log-line {
+            display: flex;
+            gap: 8px;
+            padding: 1px 0;
+        }
+        .log-time {
+            color: #6b7280;
+            flex-shrink: 0;
+        }
+        .log-msg { word-break: break-all; }
+        .log-info .log-msg { color: #93c5fd; }
+        .log-warning .log-msg { color: #fcd34d; }
+        .log-error .log-msg { color: #fca5a5; }
+        .log-debug .log-msg { color: #9ca3af; }
+        .log-toggle {
+            font-size: 12px;
+            color: var(--primary);
+            cursor: pointer;
+            margin-top: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            user-select: none;
+        }
+        .log-toggle:hover { color: var(--primary-hover); }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="app-container">
+            <!-- Header -->
+            <div class="header">
+                <h1><span class="icon">📺</span>B站下载工具</h1>
+                <p class="subtitle">支持视频和音频下载</p>
+            </div>
+
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn" :class="{ active: activeTab === 'download' }" @click="activeTab = 'download'">
+                    <i class="ri-download-line"></i> 下载
+                </button>
+                <button class="tab-btn" :class="{ active: activeTab === 'history' }" @click="activeTab = 'history'; loadHistory()">
+                    <i class="ri-history-line"></i> 历史记录
+                </button>
+                <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
+                    <i class="ri-settings-3-line"></i> 设置
+                </button>
+            </div>
+
+            <!-- ========== 下载 Tab ========== -->
+            <div v-if="activeTab === 'download'" class="fade-in">
+                <!-- 输入区域 -->
+                <div class="card">
+                    <div class="card-title"><i class="ri-link"></i>添加下载链接</div>
+                    <div class="form-group">
+                        <textarea
+                            class="form-input"
+                            v-model="urlInput"
+                            placeholder="粘贴B站视频/音频链接，每行一个&#10;例如：https://www.bilibili.com/video/BV1xx411c7mD"
+                            rows="4"
+                        ></textarea>
+                        <div class="form-hint">支持批量下载，每行一个链接；支持 BV号、av号、ep号等</div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="toggle-row">
+                            <label class="toggle">
+                                <input type="checkbox" v-model="audioOnly">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span style="font-size:14px;font-weight:500;">
+                                <i class="ri-music-line" style="color:var(--primary);"></i> 仅下载音频（提取 MP3）
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="btn-row">
+                        <button class="btn btn-primary" @click="startDownload" :disabled="!urlInput.trim() || isDownloading">
+                            <i class="ri-download-2-line"></i> 开始下载
+                        </button>
+                        <button class="btn btn-secondary btn-sm" @click="urlInput = ''">
+                            <i class="ri-delete-back-line"></i> 清空
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 下载进度 -->
+                <div class="card" v-if="tasks.length > 0">
+                    <div class="card-title">
+                        <i class="ri-download-cloud-line"></i>下载任务
+                        <span class="text-secondary" style="font-size:12px;font-weight:400;">（{{ completedCount }}/{{ tasks.length }} 完成）</span>
+                    </div>
+                    <div class="task-list">
+                        <div class="task-item fade-in" v-for="task in tasks" :key="task.id" style="flex-direction:column;align-items:stretch;">
+                            <div style="display:flex;align-items:center;gap:14px;">
+                                <div class="task-info" style="flex:1;">
+                                    <div class="task-title" v-if="task.title">{{ task.title }}</div>
+                                    <div class="task-url" :title="task.url">{{ task.url }}</div>
+                                    <div class="task-meta" v-if="task.status === 'downloading'">
+                                        <span>{{ task.progress }}%</span>
+                                        <span v-if="task.speed">{{ task.speed }}</span>
+                                        <span v-if="task.eta">剩余 {{ task.eta }}</span>
+                                        <span v-if="task.fragment">片段 {{ task.fragment }}</span>
+                                    </div>
+                                    <div class="progress-bar-wrap" v-if="task.status === 'downloading' || task.status === 'processing'">
+                                        <div class="progress-bar" :style="{ width: task.progress + '%' }"></div>
+                                    </div>
+                                    <div class="text-danger" style="font-size:12px;margin-top:4px;" v-if="task.error">
+                                        {{ task.error }}
+                                    </div>
+                                </div>
+                                <span class="status-badge" :class="'status-' + task.status">
+                                    <template v-if="task.status === 'queued'">排队中</template>
+                                    <template v-else-if="task.status === 'starting'">启动中</template>
+                                    <template v-else-if="task.status === 'downloading'">下载中</template>
+                                    <template v-else-if="task.status === 'processing'">处理中</template>
+                                    <template v-else-if="task.status === 'completed'">✅ 完成</template>
+                                    <template v-else-if="task.status === 'failed'">❌ 失败</template>
+                                </span>
+                                <button class="btn btn-danger btn-sm" @click="removeTask(task.id)" v-if="task.status !== 'downloading' && task.status !== 'starting'">
+                                    <i class="ri-close-line"></i>
+                                </button>
+                            </div>
+                            <!-- 日志面板 -->
+                            <div v-if="getTaskLogs(task.id).length > 0" style="margin-top:8px;">
+                                <span class="log-toggle" @click="toggleLog(task.id)">
+                                    <i :class="isLogExpanded(task.id) ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'"></i>
+                                    日志 ({{ getTaskLogs(task.id).length }})
+                                </span>
+                                <div class="log-panel" v-show="isLogExpanded(task.id)" ref="logPanels">
+                                    <div class="log-line" :class="'log-' + log.level" v-for="(log, li) in getTaskLogs(task.id)" :key="li">
+                                        <span class="log-time">{{ log.time }}</span>
+                                        <span class="log-msg">{{ log.message }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="btn-row" style="margin-top:14px;" v-if="hasCompleted">
+                        <button class="btn btn-secondary btn-sm" @click="clearCompletedTasks">
+                            <i class="ri-delete-bin-line"></i> 清除已完成
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== 历史记录 Tab ========== -->
+            <div v-if="activeTab === 'history'" class="fade-in">
+                <div class="card">
+                    <div class="card-title">
+                        <i class="ri-history-line"></i>下载历史
+                        <span style="margin-left:auto;font-size:12px;font-weight:400;" class="text-secondary" v-if="history.length > 0">共 {{ history.length }} 条</span>
+                    </div>
+
+                    <div v-if="history.length === 0" class="empty-state">
+                        <i class="ri-inbox-line"></i>
+                        <p>暂无下载记录</p>
+                    </div>
+
+                    <div v-else style="overflow-x:auto;">
+                        <table class="history-table">
+                            <thead>
+                                <tr>
+                                    <th>标题</th>
+                                    <th>类型</th>
+                                    <th>大小</th>
+                                    <th>时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="record in history" :key="record.id">
+                                    <td class="history-title" :title="record.title">{{ record.title || record.url }}</td>
+                                    <td>
+                                        <span class="status-badge" :class="record.audio_only ? 'status-starting' : 'status-downloading'">
+                                            {{ record.audio_only ? 'MP3' : '视频' }}
+                                        </span>
+                                    </td>
+                                    <td class="text-secondary">{{ formatSize(record.size) }}</td>
+                                    <td class="text-secondary">{{ record.time }}</td>
+                                    <td>
+                                        <div class="history-actions">
+                                            <button class="btn btn-secondary btn-sm" @click="openFolder(record.filepath)" title="打开所在文件夹">
+                                                <i class="ri-folder-open-line"></i>
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" @click="deleteHistory(record.id)">
+                                                <i class="ri-delete-bin-line"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="btn-row" style="margin-top:14px;" v-if="history.length > 0">
+                        <button class="btn btn-danger btn-sm" @click="clearHistory">
+                            <i class="ri-delete-bin-line"></i> 清空历史
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== 设置 Tab ========== -->
+            <div v-if="activeTab === 'settings'" class="fade-in">
+                <div class="card">
+                    <div class="card-title"><i class="ri-folder-line"></i>下载目录</div>
+                    <div class="form-group">
+                        <div class="btn-row">
+                            <input class="form-input" v-model="config.download_dir" placeholder="选择下载保存目录" style="flex:1;">
+                            <button class="btn btn-secondary btn-sm" @click="selectFolder">
+                                <i class="ri-folder-open-line"></i> 浏览
+                            </button>
+                        </div>
+                        <div class="form-hint">下载的文件将保存在此目录</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i class="ri-shield-keyhole-line"></i>Cookie 配置（可选）</div>
+                    <div class="form-group">
+                        <textarea
+                            class="form-input"
+                            v-model="config.cookie_file"
+                            placeholder="粘贴 Netscape 格式的 Cookie 文本&#10;或填入 cookie.txt 文件路径&#10;&#10;获取方式：使用浏览器插件（如 cookies.txt）导出 B站 Cookie"
+                            rows="4"
+                        ></textarea>
+                        <div class="form-hint">登录后可下载更高质量的视频（1080P+）。留空则不使用 Cookie</div>
+                    </div>
+                </div>
+
+                <div class="btn-row">
+                    <button class="btn btn-primary" @click="saveSettings">
+                        <i class="ri-save-line"></i> 保存设置
+                    </button>
+                </div>
+                <div v-if="settingsSaved" class="text-success" style="margin-top:10px;font-size:13px;">
+                    <i class="ri-check-line"></i> 设置已保存
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const activeTab = ref('download');
+                const urlInput = ref('');
+                const audioOnly = ref(false);
+                const tasks = ref([]);
+                const history = ref([]);
+                const config = reactive({ download_dir: '', cookie_file: '' });
+                const settingsSaved = ref(false);
+                const socket = ref(null);
+
+                // 日志管理：task_id -> [{time, level, message}, ...]
+                const taskLogs = reactive({});
+                // 日志展开状态：task_id -> bool
+                const logExpanded = reactive({});
+
+                // ---------- Computed ----------
+                const completedCount = computed(() => tasks.value.filter(t => t.status === 'completed').length);
+                const hasCompleted = computed(() => tasks.value.some(t => t.status === 'completed'));
+                const isDownloading = computed(() => tasks.value.some(t => t.status === 'downloading' || t.status === 'starting'));
+
+                // ---------- Methods ----------
+                function formatSize(bytes) {
+                    if (!bytes || bytes === 0) return '-';
+                    const units = ['B', 'KB', 'MB', 'GB'];
+                    let i = 0;
+                    let size = bytes;
+                    while (size >= 1024 && i < units.length - 1) {
+                        size /= 1024;
+                        i++;
+                    }
+                    return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+                }
+
+                async function loadConfig() {
+                    try {
+                        const res = await fetch('/api/config');
+                        const data = await res.json();
+                        config.download_dir = data.download_dir || '';
+                        config.cookie_file = data.cookie_file || '';
+                    } catch (e) {
+                        console.error('加载配置失败', e);
+                    }
+                }
+
+                async function saveSettings() {
+                    try {
+                        await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                download_dir: config.download_dir,
+                                cookie_file: config.cookie_file,
+                            }),
+                        });
+                        settingsSaved.value = true;
+                        setTimeout(() => settingsSaved.value = false, 2000);
+                    } catch (e) {
+                        alert('保存设置失败: ' + e.message);
+                    }
+                }
+
+                function selectFolder() {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.webkitdirectory = true;
+                    input.directory = true;
+                    input.onchange = (e) => {
+                        const files = e.target.files;
+                        if (files.length > 0) {
+                            const path = files[0].webkitRelativePath;
+                            const dir = path.split('/')[0];
+                            config.download_dir = config.download_dir
+                                ? config.download_dir.replace(/[^\\/]*$/, '') + dir
+                                : dir;
+                        }
+                    };
+                    input.click();
+                }
+
+                async function startDownload() {
+                    const lines = urlInput.value.split('\n').map(l => l.trim()).filter(l => l);
+                    if (lines.length === 0) return;
+
+                    try {
+                        const res = await fetch('/api/download', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                urls: lines,
+                                audio_only: audioOnly.value,
+                            }),
+                        });
+                        const data = await res.json();
+                        if (data.error) {
+                            alert(data.error);
+                            return;
+                        }
+                        // 添加任务到列表
+                        data.task_ids.forEach(id => {
+                            tasks.value.push({
+                                id,
+                                url: '',
+                                title: '',
+                                status: 'queued',
+                                progress: 0,
+                                speed: '',
+                                eta: '',
+                                error: '',
+                            });
+                        });
+                    } catch (e) {
+                        alert('启动下载失败: ' + e.message);
+                    }
+                }
+
+                function removeTask(taskId) {
+                    tasks.value = tasks.value.filter(t => t.id !== taskId);
+                    fetch(`/api/tasks/${taskId}`, { method: 'DELETE' }).catch(() => {});
+                }
+
+                function clearCompletedTasks() {
+                    tasks.value = tasks.value.filter(t => t.status !== 'completed' && t.status !== 'failed');
+                }
+
+                async function loadHistory() {
+                    try {
+                        const res = await fetch('/api/history');
+                        history.value = await res.json();
+                    } catch (e) {
+                        console.error('加载历史失败', e);
+                    }
+                }
+
+                async function clearHistory() {
+                    if (!confirm('确定清空所有下载历史吗？')) return;
+                    await fetch('/api/history', { method: 'DELETE' });
+                    history.value = [];
+                }
+
+                async function deleteHistory(id) {
+                    await fetch(`/api/history/${id}`, { method: 'DELETE' });
+                    history.value = history.value.filter(r => r.id !== id);
+                }
+
+                async function openFolder(filepath) {
+                    if (!filepath) return;
+                    const dir = filepath.substring(0, filepath.lastIndexOf('\\') > -1 ? filepath.lastIndexOf('\\') : filepath.lastIndexOf('/'));
+                    await fetch('/api/open-folder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ folder: dir }),
+                    });
+                }
+
+                // ---------- SocketIO ----------
+                function initSocket() {
+                    socket.value = io();
+
+                    socket.value.on('progress_update', (task) => {
+                        const idx = tasks.value.findIndex(t => t.id === task.id);
+                        if (idx >= 0) {
+                            tasks.value[idx] = { ...tasks.value[idx], ...task };
+                        } else {
+                            tasks.value.push(task);
+                        }
+                    });
+
+                    socket.value.on('download_complete', (task) => {
+                        const idx = tasks.value.findIndex(t => t.id === task.id);
+                        if (idx >= 0) {
+                            tasks.value[idx] = { ...tasks.value[idx], ...task };
+                        }
+                    });
+
+                    // 接收日志推送
+                    socket.value.on('download_log', (logEntry) => {
+                        const tid = logEntry.task_id;
+                        if (!taskLogs[tid]) {
+                            taskLogs[tid] = [];
+                        }
+                        taskLogs[tid].push({
+                            time: logEntry.time,
+                            level: logEntry.level,
+                            message: logEntry.message,
+                        });
+                        // 限制日志数量
+                        if (taskLogs[tid].length > 500) {
+                            taskLogs[tid] = taskLogs[tid].slice(-300);
+                        }
+                        // 新任务自动展开日志
+                        if (!(tid in logExpanded)) {
+                            logExpanded[tid] = true;
+                        }
+                        // 自动滚动到底部
+                        nextTick(() => {
+                            const panels = document.querySelectorAll('.log-panel');
+                            panels.forEach(p => {
+                                p.scrollTop = p.scrollHeight;
+                            });
+                        });
+                    });
+                }
+
+                // ---------- 日志相关方法 ----------
+                function getTaskLogs(taskId) {
+                    return taskLogs[taskId] || [];
+                }
+                function isLogExpanded(taskId) {
+                    return logExpanded[taskId] !== false;
+                }
+                function toggleLog(taskId) {
+                    logExpanded[taskId] = !isLogExpanded(taskId);
+                }
+
+                // ---------- Lifecycle ----------
+                onMounted(() => {
+                    loadConfig();
+                    initSocket();
+                });
+
+                return {
+                    activeTab,
+                    urlInput,
+                    audioOnly,
+                    tasks,
+                    history,
+                    config,
+                    settingsSaved,
+                    completedCount,
+                    hasCompleted,
+                    isDownloading,
+                    formatSize,
+                    loadConfig,
+                    saveSettings,
+                    selectFolder,
+                    startDownload,
+                    removeTask,
+                    clearCompletedTasks,
+                    loadHistory,
+                    clearHistory,
+                    deleteHistory,
+                    openFolder,
+                    getTaskLogs,
+                    isLogExpanded,
+                    toggleLog,
+                    taskLogs,
+                    logExpanded,
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
