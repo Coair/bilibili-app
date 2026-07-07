@@ -21,20 +21,15 @@ if %errorlevel% neq 0 (
 
 echo [√] Python 已就绪
 
-:: 检查依赖是否安装
-pip show flask >nul 2>&1
+:: 自动安装/更新依赖（pip 会自动跳过已安装的包）
+echo [!] 正在检查并安装依赖...
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if %errorlevel% neq 0 (
-    echo [!] 检测到依赖未安装，正在自动安装...
-    pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-    if %errorlevel% neq 0 (
-        echo [错误] 依赖安装失败，请检查网络连接后重试
-        pause
-        exit /b 1
-    )
-    echo [√] 依赖安装完成
-) else (
-    echo [√] 依赖已就绪
+    echo [错误] 依赖安装失败，请检查网络连接后重试
+    pause
+    exit /b 1
 )
+echo [√] 依赖已就绪
 
 echo.
 echo ================================================
