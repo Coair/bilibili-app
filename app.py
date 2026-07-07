@@ -4,6 +4,8 @@ import json
 import logging
 import threading
 import time
+import uuid
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -25,8 +27,11 @@ HISTORY_FILE = BASE_DIR / 'history.json'
 # ---------- 配置管理 ----------
 def load_config():
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
     return {
         "download_dir": str(BASE_DIR / 'downloads'),
         "cookie_file": ""
@@ -38,8 +43,11 @@ def save_config(config):
 
 def load_history():
     if HISTORY_FILE.exists():
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
     return []
 
 def save_history(history):
@@ -49,9 +57,13 @@ def save_history(history):
 # ---------- 下载任务管理 ----------
 download_tasks = {}  # task_id -> {...}
 task_lock = threading.Lock()
+history_lock = threading.Lock()
 
 def emit_log(task_id, level, message):
-    """推送日志到前端"""
+    """推送日志到前端（过滤无意义的进度行）"""
+    # 过滤 yt-dlp 的 [download] 进度日志，界面已有进度条
+    if isinstance(message, str) and message.strip().startswith('[download]'):
+        return
     socketio.emit('download_log', {
         'task_id': task_id,
         'level': level,  # info, warning, error, debug
@@ -150,12 +162,25 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
         'merge_output_format': 'mp4',
         'windowsfilenames': True,
         'logger': logging.getLogger(f'yt-dlp-{task_id}'),
-        'verbose': True,
     }
 
-    if cookie_file and os.path.exists(cookie_file):
-        ydl_opts['cookiefile'] = cookie_file
-        emit_log(task_id, 'info', f'使用 Cookie 文件: {cookie_file}')
+    if cookie_file:
+        if os.path.exists(cookie_file):
+            ydl_opts['cookiefile'] = cookie_file
+            emit_log(task_id, 'info', f'使用 Cookie 文件: {cookie_file}')
+        else:
+            # 可能是粘贴的 Cookie 文本内容，写入临时文件
+            try:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.txt', prefix='bili_cookie_',
+                    delete=False, encoding='utf-8'
+                )
+                tmp.write(cookie_file)
+                tmp.close()
+                ydl_opts['cookiefile'] = tmp.name
+                emit_log(task_id, 'info', '使用粘贴的 Cookie 文本（已写入临时文件）')
+            except Exception as e:
+                emit_log(task_id, 'warning', f'Cookie 处理失败: {e}')
 
     if audio_only:
         ydl_opts['format'] = 'bestaudio/best'
@@ -172,10 +197,10 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
 
     # 设置 logger 捕获 yt-dlp 输出
     logger = logging.getLogger(f'yt-dlp-{task_id}')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)  # INFO 级别，过滤 DEBUG 进度细节
     logger.handlers.clear()
     handler = TaskLogger(task_id).get_handler()
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(logging.INFO)
     formatter = logging.Formatter('%(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -197,15 +222,30 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
             emit_log(task_id, 'info', f'视频标题: {title}')
             emit_log(task_id, 'info', '下载完成，正在处理文件...')
 
-            # 找到实际下载的文件
-            actual_file = os.path.join(download_dir, filename)
+            # 优先使用 yt-dlp 返回的确切文件路径
+            actual_file = None
+            requested_downloads = info.get('requested_downloads', [])
+            if requested_downloads:
+                actual_file = requested_downloads[0].get('filepath', '')
+                if actual_file:
+                    filename = os.path.basename(actual_file)
+
+            # 回退：拼接文件名查找
+            if not actual_file or not os.path.exists(actual_file):
+                actual_file = os.path.join(download_dir, filename)
+                if not os.path.exists(actual_file):
+                    try:
+                        for f in os.listdir(download_dir):
+                            fpath = os.path.join(download_dir, f)
+                            if os.path.isfile(fpath) and f.startswith(title):
+                                actual_file = fpath
+                                filename = f
+                                break
+                    except (FileNotFoundError, PermissionError) as e:
+                        emit_log(task_id, 'warning', f'查找文件时出错: {e}')
+
             if not os.path.exists(actual_file):
-                for f in os.listdir(download_dir):
-                    fpath = os.path.join(download_dir, f)
-                    if os.path.isfile(fpath) and title in f:
-                        actual_file = fpath
-                        filename = f
-                        break
+                emit_log(task_id, 'warning', '无法确定下载的文件路径')
 
             file_size = os.path.getsize(actual_file) if os.path.exists(actual_file) else 0
 
@@ -221,7 +261,7 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
 
             emit_log(task_id, 'info', f'文件已保存: {filename} ({format_size_str(file_size)})')
 
-            # 保存到历史记录
+            # 保存到历史记录（加锁防并发）
             record = {
                 'id': task_id,
                 'url': url,
@@ -233,11 +273,12 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                 'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'status': 'completed'
             }
-            history = load_history()
-            history.insert(0, record)
-            if len(history) > 200:
-                history = history[:200]
-            save_history(history)
+            with history_lock:
+                history = load_history()
+                history.insert(0, record)
+                if len(history) > 200:
+                    history = history[:200]
+                save_history(history)
 
             socketio.emit('progress_update', task)
             socketio.emit('download_complete', task)
@@ -312,10 +353,22 @@ def start_download():
 
     task_ids = []
     for url in urls:
-        url = url.strip()
+        url = url.strip().strip('/')  # 去除前后斜杠
         if not url:
             continue
-        task_id = str(int(time.time() * 1000000))
+        # 智能补全：纯 BV号 / av号 / ep号 自动转为完整 B站链接
+        if not url.startswith('http'):
+            if url.upper().startswith('BV'):
+                url = f'https://www.bilibili.com/video/{url}'
+            elif url.lower().startswith('av'):
+                url = f'https://www.bilibili.com/video/{url}'
+            elif url.lower().startswith('ep'):
+                url = f'https://www.bilibili.com/bangumi/play/{url}'
+            elif url.lower().startswith('ss'):
+                url = f'https://www.bilibili.com/bangumi/play/{url}'
+            else:
+                url = f'https://www.bilibili.com/video/{url}'
+        task_id = str(uuid.uuid4())[:12]
         with task_lock:
             download_tasks[task_id] = {
                 'id': task_id,
@@ -357,19 +410,22 @@ def delete_task(task_id):
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    history = load_history()
+    with history_lock:
+        history = load_history()
     return jsonify(history)
 
 @app.route('/api/history', methods=['DELETE'])
 def clear_history():
-    save_history([])
+    with history_lock:
+        save_history([])
     return jsonify({"success": True})
 
 @app.route('/api/history/<record_id>', methods=['DELETE'])
 def delete_history_record(record_id):
-    history = load_history()
-    history = [r for r in history if r['id'] != record_id]
-    save_history(history)
+    with history_lock:
+        history = load_history()
+        history = [r for r in history if r['id'] != record_id]
+        save_history(history)
     return jsonify({"success": True})
 
 @app.route('/api/open-folder', methods=['POST'])
@@ -392,4 +448,5 @@ if __name__ == '__main__':
     print(f"  B站下载工具")
     print(f"  访问地址: http://localhost:5001")
     print(f"{'='*50}\n")
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True, allow_unsafe_werkzeug=True)
+    debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    socketio.run(app, host='0.0.0.0', port=5001, debug=debug_mode, allow_unsafe_werkzeug=True)
