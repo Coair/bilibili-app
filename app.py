@@ -376,11 +376,15 @@ def delete_history_record(record_id):
 def open_folder():
     data = request.json
     folder = data.get('folder', '')
-    if folder and os.path.exists(folder):
-        import subprocess
-        subprocess.Popen(['explorer', folder])
-        return jsonify({"success": True})
-    return jsonify({"error": "文件夹不存在"}), 400
+    if folder:
+        # 规范化路径，统一分隔符（Windows 上转为 \）
+        folder = os.path.normpath(folder)
+        if os.path.exists(folder):
+            import subprocess
+            subprocess.Popen(['explorer', folder])
+            return jsonify({"success": True})
+        return jsonify({"error": f"文件夹不存在: {folder}"}), 400
+    return jsonify({"error": "未提供文件夹路径"}), 400
 
 # ---------- 启动 ----------
 if __name__ == '__main__':

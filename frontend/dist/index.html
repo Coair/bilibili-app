@@ -830,7 +830,11 @@
 
                 async function openFolder(filepath) {
                     if (!filepath) return;
-                    const dir = filepath.substring(0, filepath.lastIndexOf('\\') > -1 ? filepath.lastIndexOf('\\') : filepath.lastIndexOf('/'));
+                    // 提取目录路径：统一处理 \ 和 / 分隔符
+                    const lastBackslash = filepath.lastIndexOf('\\');
+                    const lastSlash = filepath.lastIndexOf('/');
+                    const lastSep = Math.max(lastBackslash, lastSlash);
+                    const dir = lastSep > -1 ? filepath.substring(0, lastSep) : filepath;
                     await fetch('/api/open-folder', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
