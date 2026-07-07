@@ -143,19 +143,9 @@ class TaskLogger:
                 emit_log(task_id, level, msg)
         return _Handler()
 
-def download_worker(task_id, url, download_dir, audio_only, cookie_file):
-    """后台下载线程"""
-    with task_lock:
-        if task_id not in download_tasks:
-            return
-        task = download_tasks[task_id]
-        task['status'] = 'starting'
-
-    emit_log(task_id, 'info', f'开始解析: {url}')
-
-    # 构建 yt-dlp 选项
+def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file):
+    """构建 yt-dlp 选项（共用）"""
     outtmpl = os.path.join(download_dir, '%(title)s.%(ext)s')
-
     ydl_opts = {
         'outtmpl': outtmpl,
         'progress_hooks': [progress_hook(task_id)],
@@ -163,13 +153,10 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
         'windowsfilenames': True,
         'logger': logging.getLogger(f'yt-dlp-{task_id}'),
     }
-
     if cookie_file:
         if os.path.exists(cookie_file):
             ydl_opts['cookiefile'] = cookie_file
-            emit_log(task_id, 'info', f'使用 Cookie 文件: {cookie_file}')
         else:
-            # 可能是粘贴的 Cookie 文本内容，写入临时文件
             try:
                 tmp = tempfile.NamedTemporaryFile(
                     mode='w', suffix='.txt', prefix='bili_cookie_',
@@ -178,10 +165,8 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                 tmp.write(cookie_file)
                 tmp.close()
                 ydl_opts['cookiefile'] = tmp.name
-                emit_log(task_id, 'info', '使用粘贴的 Cookie 文本（已写入临时文件）')
             except Exception as e:
                 emit_log(task_id, 'warning', f'Cookie 处理失败: {e}')
-
     if audio_only:
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{
@@ -189,23 +174,94 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }]
-        emit_log(task_id, 'info', '下载模式: 仅音频 (MP3/320kbps)')
     else:
-        # 更宽松的格式选择：最佳视频+最佳音频，自动合并为 mp4
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
-        emit_log(task_id, 'info', '下载模式: 视频+音频 (最佳质量)')
+    return ydl_opts
 
-    # 设置 logger 捕获 yt-dlp 输出
+def _setup_logger(task_id):
+    """设置 yt-dlp logger"""
     logger = logging.getLogger(f'yt-dlp-{task_id}')
-    logger.setLevel(logging.INFO)  # INFO 级别，过滤 DEBUG 进度细节
+    logger.setLevel(logging.INFO)
     logger.handlers.clear()
     handler = TaskLogger(task_id).get_handler()
     handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(message)s')
-    handler.setFormatter(formatter)
+    handler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(handler)
-    # 阻止日志向上传播到 root logger
     logger.propagate = False
+    return logger
+
+def _finish_single_task(task_id, url, title, actual_file, audio_only):
+    """单个视频下载完成后的收尾工作"""
+    file_size = os.path.getsize(actual_file) if actual_file and os.path.exists(actual_file) else 0
+    filename = os.path.basename(actual_file) if actual_file else ''
+    with task_lock:
+        if task_id in download_tasks:
+            task = download_tasks[task_id]
+            task['status'] = 'completed'
+            task['progress'] = 100
+            task['title'] = title
+            task['filename'] = filename
+            task['filepath'] = actual_file
+            task['size'] = file_size
+    emit_log(task_id, 'info', f'文件已保存: {filename} ({format_size_str(file_size)})')
+    # 保存到历史记录
+    record = {
+        'id': task_id,
+        'url': url,
+        'title': title,
+        'filename': filename,
+        'filepath': actual_file,
+        'audio_only': audio_only,
+        'size': file_size,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'status': 'completed'
+    }
+    with history_lock:
+        history = load_history()
+        history.insert(0, record)
+        if len(history) > 200:
+            history = history[:200]
+        save_history(history)
+    task_snapshot = dict(download_tasks.get(task_id, {})) if task_id in download_tasks else {}
+    socketio.emit('progress_update', task_snapshot)
+    socketio.emit('download_complete', task_snapshot)
+    emit_log(task_id, 'info', '✅ 下载任务完成!')
+
+def _find_downloaded_file(download_dir, title, ext, info):
+    """根据 info 或文件系统找到实际下载的文件路径"""
+    actual_file = None
+    filename = f"{title}.{ext}"
+    requested_downloads = info.get('requested_downloads', [])
+    if requested_downloads:
+        fp = requested_downloads[0].get('filepath', '')
+        if fp and os.path.exists(fp):
+            return fp
+    # 回退：拼接文件名查找
+    candidate = os.path.join(download_dir, filename)
+    if os.path.exists(candidate):
+        return candidate
+    # 模糊匹配
+    try:
+        for f in os.listdir(download_dir):
+            fpath = os.path.join(download_dir, f)
+            if os.path.isfile(fpath) and f.startswith(title):
+                return fpath
+    except (FileNotFoundError, PermissionError):
+        pass
+    return candidate  # 返回候选路径，调用方自己判断是否存在
+
+def download_worker(task_id, url, download_dir, audio_only, cookie_file):
+    """后台下载线程（支持单视频、合集、收藏夹、播放列表）"""
+    with task_lock:
+        if task_id not in download_tasks:
+            return
+        task = download_tasks[task_id]
+        task['status'] = 'starting'
+
+    emit_log(task_id, 'info', f'开始解析: {url}')
+
+    ydl_opts = _build_ydl_opts(task_id, download_dir, audio_only, cookie_file)
+    logger = _setup_logger(task_id)
 
     try:
         with task_lock:
@@ -214,94 +270,113 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             emit_log(task_id, 'info', '正在获取视频信息...')
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', '未知标题')
-            ext = 'mp3' if audio_only else 'mp4'
-            filename = f"{title}.{ext}"
+            info = ydl.extract_info(url, download=False)
 
-            emit_log(task_id, 'info', f'视频标题: {title}')
-            emit_log(task_id, 'info', '下载完成，正在处理文件...')
+            # 判断是否为播放列表（合集/收藏夹/分P）
+            is_playlist = info.get('_type') == 'playlist' or 'entries' in info
+            entries = info.get('entries', []) if is_playlist else None
 
-            # 优先使用 yt-dlp 返回的确切文件路径
-            actual_file = None
-            requested_downloads = info.get('requested_downloads', [])
-            if requested_downloads:
-                actual_file = requested_downloads[0].get('filepath', '')
-                if actual_file:
-                    filename = os.path.basename(actual_file)
+            if is_playlist and entries:
+                # ========== 播放列表模式 ==========
+                playlist_title = info.get('title', '未知列表')
+                total = len(entries)
+                emit_log(task_id, 'info', f'检测到合集/收藏夹: {playlist_title}（共 {total} 个视频）')
 
-            # 回退：拼接文件名查找
-            if not actual_file or not os.path.exists(actual_file):
-                actual_file = os.path.join(download_dir, filename)
-                if not os.path.exists(actual_file):
+                # 在父任务所在目录下创建子目录
+                playlist_dir = os.path.join(download_dir, _safe_filename(playlist_title))
+                os.makedirs(playlist_dir, exist_ok=True)
+
+                # 为父任务设置播放列表信息
+                with task_lock:
+                    if task_id in download_tasks:
+                        t = download_tasks[task_id]
+                        t['title'] = playlist_title
+                        t['playlist_total'] = total
+                        t['playlist_completed'] = 0
+                        t['url'] = url
+                socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
+
+                completed_count = 0
+                for idx, entry in enumerate(entries):
+                    if entry is None:
+                        continue
+                    entry_url = entry.get('webpage_url') or entry.get('url') or entry.get('id', '')
+                    entry_title = entry.get('title', f'第{idx+1}个视频')
+
+                    emit_log(task_id, 'info', f'[{idx+1}/{total}] 开始下载: {entry_title}')
+
+                    # 为当前视频创建子任务的 yt-dlp 选项（下载到子目录）
+                    sub_opts = _build_ydl_opts(task_id, playlist_dir, audio_only, cookie_file)
+                    sub_opts['logger'] = logging.getLogger(f'yt-dlp-{task_id}')
+                    # 更新播放列表进度
+                    with task_lock:
+                        if task_id in download_tasks:
+                            t = download_tasks[task_id]
+                            t['progress'] = round((completed_count / total) * 100, 1)
+                            t['current_video'] = f'{idx+1}/{total}'
+                            t['current_title'] = entry_title
+                    socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
+
                     try:
-                        for f in os.listdir(download_dir):
-                            fpath = os.path.join(download_dir, f)
-                            if os.path.isfile(fpath) and f.startswith(title):
-                                actual_file = fpath
-                                filename = f
-                                break
-                    except (FileNotFoundError, PermissionError) as e:
-                        emit_log(task_id, 'warning', f'查找文件时出错: {e}')
+                        with yt_dlp.YoutubeDL(sub_opts) as sub_ydl:
+                            sub_info = sub_ydl.extract_info(entry_url, download=True)
+                            ext = 'mp3' if audio_only else 'mp4'
+                            actual_file = _find_downloaded_file(playlist_dir, sub_info.get('title', entry_title), ext, sub_info)
+                            if os.path.exists(actual_file):
+                                _finish_single_task(task_id, entry_url, sub_info.get('title', entry_title), actual_file, audio_only)
+                    except Exception as e:
+                        emit_log(task_id, 'error', f'[{idx+1}/{total}] 下载失败: {entry_title} - {e}')
+                        import traceback
+                        emit_log(task_id, 'error', traceback.format_exc())
 
-            if not os.path.exists(actual_file):
-                emit_log(task_id, 'warning', '无法确定下载的文件路径')
+                    completed_count += 1
+                    with task_lock:
+                        if task_id in download_tasks:
+                            download_tasks[task_id]['playlist_completed'] = completed_count
+                    socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
-            file_size = os.path.getsize(actual_file) if os.path.exists(actual_file) else 0
+                # 全部完成
+                with task_lock:
+                    if task_id in download_tasks:
+                        t = download_tasks[task_id]
+                        t['status'] = 'completed'
+                        t['progress'] = 100
+                        t['playlist_completed'] = total
+                emit_log(task_id, 'info', f'✅ 合集/收藏夹下载完成！共 {total} 个视频，保存至: {playlist_dir}')
+                socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
+                socketio.emit('download_complete', dict(download_tasks.get(task_id, {})))
+            else:
+                # ========== 单视频模式 ==========
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', '未知标题')
+                ext = 'mp3' if audio_only else 'mp4'
+                emit_log(task_id, 'info', f'视频标题: {title}')
+                emit_log(task_id, 'info', '下载完成，正在处理文件...')
 
-            with task_lock:
-                if task_id in download_tasks:
-                    task = download_tasks[task_id]
-                    task['status'] = 'completed'
-                    task['progress'] = 100
-                    task['title'] = title
-                    task['filename'] = filename
-                    task['filepath'] = actual_file
-                    task['size'] = file_size
+                actual_file = _find_downloaded_file(download_dir, title, ext, info)
+                if not os.path.exists(actual_file):
+                    emit_log(task_id, 'warning', '无法确定下载的文件路径')
 
-            emit_log(task_id, 'info', f'文件已保存: {filename} ({format_size_str(file_size)})')
-
-            # 保存到历史记录（加锁防并发）
-            record = {
-                'id': task_id,
-                'url': url,
-                'title': title,
-                'filename': filename,
-                'filepath': actual_file,
-                'audio_only': audio_only,
-                'size': file_size,
-                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'status': 'completed'
-            }
-            with history_lock:
-                history = load_history()
-                history.insert(0, record)
-                if len(history) > 200:
-                    history = history[:200]
-                save_history(history)
-
-            socketio.emit('progress_update', task)
-            socketio.emit('download_complete', task)
-            emit_log(task_id, 'info', '✅ 下载任务完成!')
+                _finish_single_task(task_id, url, title, actual_file, audio_only)
 
     except Exception as e:
         error_msg = str(e)
         emit_log(task_id, 'error', f'下载失败: {error_msg}')
-
-        # 打印完整堆栈到日志
         import traceback
-        tb = traceback.format_exc()
-        emit_log(task_id, 'error', tb)
-
+        emit_log(task_id, 'error', traceback.format_exc())
         with task_lock:
             if task_id in download_tasks:
                 task = download_tasks[task_id]
                 task['status'] = 'failed'
                 task['error'] = error_msg
-        socketio.emit('progress_update', task)
+        socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
     finally:
-        # 清理 logger
         logger.handlers.clear()
+
+def _safe_filename(name):
+    """清理文件名中的非法字符"""
+    import re
+    return re.sub(r'[\\/:*?"<>|]', '_', name)
 
 def format_size_str(size):
     if not size:

@@ -504,10 +504,10 @@
                         <textarea
                             class="form-input"
                             v-model="urlInput"
-                            placeholder="粘贴B站视频/音频链接，每行一个&#10;例如：https://www.bilibili.com/video/BV1xx411c7mD"
+                            placeholder="粘贴B站视频/合集/收藏夹链接，每行一个&#10;例如：https://www.bilibili.com/video/BV1xx411c7mD&#10;合集：https://space.bilibili.com/xxx/channel/collectiondetail?sid=xxx&#10;收藏夹：https://space.bilibili.com/xxx/favlist?fid=xxx"
                             rows="4"
                         ></textarea>
-                        <div class="form-hint">支持批量下载，每行一个链接；支持 BV号、av号、ep号等</div>
+                        <div class="form-hint">支持单视频、合集、收藏夹；支持 BV号、av号、ep号等短码</div>
                     </div>
 
                     <div class="form-group">
@@ -543,7 +543,16 @@
                             <div class="task-info" style="flex:1;">
                                 <div class="task-title" v-if="task.title">{{ task.title }}</div>
                                 <div class="task-url" :title="task.url">{{ task.url }}</div>
-                                <div class="task-meta" v-if="task.status === 'downloading'">
+                                <!-- 播放列表进度 -->
+                                <div class="task-meta" v-if="task.playlist_total">
+                                    <span style="color:var(--primary);font-weight:500;">
+                                        <i class="ri-play-list-2-line"></i>
+                                        {{ task.playlist_completed || 0 }}/{{ task.playlist_total }} 个视频
+                                    </span>
+                                    <span v-if="task.current_title" class="text-secondary">{{ task.current_title }}</span>
+                                </div>
+                                <!-- 单视频进度 -->
+                                <div class="task-meta" v-else-if="task.status === 'downloading'">
                                     <span>{{ task.progress }}%</span>
                                     <span v-if="task.speed">{{ task.speed }}</span>
                                     <span v-if="task.eta">剩余 {{ task.eta }}</span>
