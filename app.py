@@ -71,13 +71,15 @@ def emit_log(task_id, level, message):
         'time': datetime.now().strftime('%H:%M:%S'),
     })
 
-def progress_hook(task_id):
-    """yt-dlp 进度回调"""
+def progress_hook(task_id, skip_on_playlist=False):
+    """yt-dlp 进度回调。skip_on_playlist=True 时，如果是合集任务则跳过更新（由后台手动控制进度）"""
     def hook(d):
         with task_lock:
             if task_id not in download_tasks:
                 return
             task = download_tasks[task_id]
+            if skip_on_playlist and task.get('is_playlist'):
+                return  # 合集模式：跳过 progress_hook，避免覆盖后台手动计算的进度
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
                 downloaded = d.get('downloaded_bytes', 0)
@@ -143,12 +145,12 @@ class TaskLogger:
                 emit_log(task_id, level, msg)
         return _Handler()
 
-def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file):
-    """构建 yt-dlp 选项（共用）"""
+def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file, skip_progress=False):
+    """构建 yt-dlp 选项（共用）。skip_progress=True 时 progress_hook 对合集任务跳过"""
     outtmpl = os.path.join(download_dir, '%(title)s.%(ext)s')
     ydl_opts = {
         'outtmpl': outtmpl,
-        'progress_hooks': [progress_hook(task_id)],
+        'progress_hooks': [progress_hook(task_id, skip_on_playlist=skip_progress)],
         'merge_output_format': 'mp4',
         'windowsfilenames': True,
         'logger': logging.getLogger(f'yt-dlp-{task_id}'),
@@ -280,7 +282,7 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                 # ========== 播放列表模式 ==========
                 playlist_title = info.get('title', '未知列表')
                 total = len(entries)
-                emit_log(task_id, 'info', f'检测到合集/收藏夹: {playlist_title}（共 {total} 个视频）')
+                emit_log(task_id, 'info', f'📂 检测到合集/收藏夹: {playlist_title}（共 {total} 个视频）')
 
                 # 在父任务所在目录下创建子目录
                 playlist_dir = os.path.join(download_dir, _safe_filename(playlist_title))
@@ -291,8 +293,11 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                     if task_id in download_tasks:
                         t = download_tasks[task_id]
                         t['title'] = playlist_title
+                        t['is_playlist'] = True
                         t['playlist_total'] = total
                         t['playlist_completed'] = 0
+                        t['playlist_progress'] = 0  # 合集整体进度
+                        t['progress'] = 0            # 当前视频进度（由 progress_hook 更新）
                         t['url'] = url
                 socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
@@ -303,19 +308,20 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                     entry_url = entry.get('webpage_url') or entry.get('url') or entry.get('id', '')
                     entry_title = entry.get('title', f'第{idx+1}个视频')
 
-                    emit_log(task_id, 'info', f'[{idx+1}/{total}] 开始下载: {entry_title}')
-
-                    # 为当前视频创建子任务的 yt-dlp 选项（下载到子目录）
-                    sub_opts = _build_ydl_opts(task_id, playlist_dir, audio_only, cookie_file)
-                    sub_opts['logger'] = logging.getLogger(f'yt-dlp-{task_id}')
-                    # 更新播放列表进度
+                    emit_log(task_id, 'info', f'[{idx+1}/{total}] {entry_title}')
+                    # 更新当前视频信息
                     with task_lock:
                         if task_id in download_tasks:
                             t = download_tasks[task_id]
-                            t['progress'] = round((completed_count / total) * 100, 1)
+                            t['progress'] = 0
                             t['current_video'] = f'{idx+1}/{total}'
                             t['current_title'] = entry_title
+                            t['status'] = 'downloading'
                     socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
+
+                    # 当前视频使用带 skip_progress=True 的选项，让 progress_hook 正常更新 progress
+                    sub_opts = _build_ydl_opts(task_id, playlist_dir, audio_only, cookie_file)
+                    sub_opts['logger'] = logging.getLogger(f'yt-dlp-{task_id}')
 
                     try:
                         with yt_dlp.YoutubeDL(sub_opts) as sub_ydl:
@@ -323,16 +329,17 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                             ext = 'mp3' if audio_only else 'mp4'
                             actual_file = _find_downloaded_file(playlist_dir, sub_info.get('title', entry_title), ext, sub_info)
                             if os.path.exists(actual_file):
-                                _finish_single_task(task_id, entry_url, sub_info.get('title', entry_title), actual_file, audio_only)
+                                file_size = os.path.getsize(actual_file)
+                                emit_log(task_id, 'info', f'  ✅ 完成 ({format_size_str(file_size)})')
                     except Exception as e:
-                        emit_log(task_id, 'error', f'[{idx+1}/{total}] 下载失败: {entry_title} - {e}')
-                        import traceback
-                        emit_log(task_id, 'error', traceback.format_exc())
+                        emit_log(task_id, 'error', f'  ❌ 下载失败: {e}')
 
                     completed_count += 1
                     with task_lock:
                         if task_id in download_tasks:
-                            download_tasks[task_id]['playlist_completed'] = completed_count
+                            t = download_tasks[task_id]
+                            t['playlist_completed'] = completed_count
+                            t['playlist_progress'] = round((completed_count / total) * 100, 1)
                     socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
                 # 全部完成
@@ -341,8 +348,35 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                         t = download_tasks[task_id]
                         t['status'] = 'completed'
                         t['progress'] = 100
+                        t['playlist_progress'] = 100
                         t['playlist_completed'] = total
-                emit_log(task_id, 'info', f'✅ 合集/收藏夹下载完成！共 {total} 个视频，保存至: {playlist_dir}')
+                emit_log(task_id, 'info', f'✅ 合集下载完成！共 {total} 个视频，保存至: {playlist_dir}')
+
+                # 合集只存一条历史记录
+                record = {
+                    'id': task_id,
+                    'url': url,
+                    'title': playlist_title,
+                    'filename': _safe_filename(playlist_title),
+                    'filepath': playlist_dir,
+                    'audio_only': audio_only,
+                    'size': sum(
+                        os.path.getsize(os.path.join(playlist_dir, f))
+                        for f in (os.listdir(playlist_dir) if os.path.exists(playlist_dir) else [])
+                        if os.path.isfile(os.path.join(playlist_dir, f))
+                    ),
+                    'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'status': 'completed',
+                    'is_playlist': True,
+                    'playlist_total': total,
+                }
+                with history_lock:
+                    history = load_history()
+                    history.insert(0, record)
+                    if len(history) > 200:
+                        history = history[:200]
+                    save_history(history)
+
                 socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
                 socketio.emit('download_complete', dict(download_tasks.get(task_id, {})))
             else:

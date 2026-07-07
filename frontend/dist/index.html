@@ -295,6 +295,23 @@
             border-radius: 3px;
             transition: width 0.4s ease;
         }
+        /* 双层进度条 - 合集外层 */
+        .progress-bar-wrap.playlist-outer {
+            height: 8px;
+            background: #e5e7eb;
+        }
+        .progress-bar.playlist-bar {
+            background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+        }
+        /* 双层进度条 - 当前视频内层 */
+        .progress-bar-wrap.playlist-inner {
+            height: 4px;
+            background: #f3f4f6;
+            margin-top: 6px;
+        }
+        .progress-bar.playlist-inner-bar {
+            background: linear-gradient(90deg, var(--primary), #ff6b9d);
+        }
         .task-meta {
             font-size: 12px;
             color: var(--text-secondary);
@@ -315,6 +332,7 @@
         .status-processing { background: #e0e7ff; color: #3730a3; }
         .status-completed { background: #d1fae5; color: #065f46; }
         .status-failed { background: #fee2e2; color: #991b1b; }
+        .status-playlist { background: #ede9fe; color: #5b21b6; }
 
         /* History Table */
         .history-table {
@@ -543,33 +561,55 @@
                             <div class="task-info" style="flex:1;">
                                 <div class="task-title" v-if="task.title">{{ task.title }}</div>
                                 <div class="task-url" :title="task.url">{{ task.url }}</div>
-                                <!-- 播放列表进度 -->
-                                <div class="task-meta" v-if="task.playlist_total">
-                                    <span style="color:var(--primary);font-weight:500;">
-                                        <i class="ri-play-list-2-line"></i>
-                                        {{ task.playlist_completed || 0 }}/{{ task.playlist_total }} 个视频
-                                    </span>
-                                    <span v-if="task.current_title" class="text-secondary">{{ task.current_title }}</span>
-                                </div>
+
+                                <!-- 合集/播放列表任务 -->
+                                <template v-if="task.is_playlist">
+                                    <div class="task-meta">
+                                        <span style="color:#7c3aed;font-weight:600;">
+                                            <i class="ri-play-list-2-line"></i>
+                                            {{ task.playlist_completed || 0 }}/{{ task.playlist_total }} 个视频
+                                        </span>
+                                        <span v-if="task.current_title" class="text-secondary">
+                                            <i class="ri-arrow-right-s-line"></i>{{ task.current_title }}
+                                        </span>
+                                    </div>
+                                    <!-- 合集整体进度条（紫色） -->
+                                    <div class="progress-bar-wrap playlist-outer" v-if="task.playlist_total">
+                                        <div class="progress-bar playlist-bar"
+                                            :style="{ width: (task.playlist_progress || 0) + '%' }"></div>
+                                    </div>
+                                    <!-- 当前视频进度条（粉色） -->
+                                    <div class="progress-bar-wrap playlist-inner" v-if="task.status === 'downloading'">
+                                        <div class="progress-bar playlist-inner-bar"
+                                            :style="{ width: (task.progress || 0) + '%' }"></div>
+                                    </div>
+                                </template>
+
                                 <!-- 单视频进度 -->
-                                <div class="task-meta" v-else-if="task.status === 'downloading'">
-                                    <span>{{ task.progress }}%</span>
-                                    <span v-if="task.speed">{{ task.speed }}</span>
-                                    <span v-if="task.eta">剩余 {{ task.eta }}</span>
-                                    <span v-if="task.fragment">片段 {{ task.fragment }}</span>
-                                </div>
-                                <div class="progress-bar-wrap" v-if="task.status === 'downloading' || task.status === 'processing'">
-                                    <div class="progress-bar" :style="{ width: task.progress + '%' }"></div>
-                                </div>
+                                <template v-else>
+                                    <div class="task-meta" v-if="task.status === 'downloading' || task.status === 'processing'">
+                                        <span>{{ task.progress }}%</span>
+                                        <span v-if="task.speed">{{ task.speed }}</span>
+                                        <span v-if="task.eta">剩余 {{ task.eta }}</span>
+                                        <span v-if="task.fragment">片段 {{ task.fragment }}</span>
+                                    </div>
+                                    <div class="progress-bar-wrap" v-if="task.status === 'downloading' || task.status === 'processing'">
+                                        <div class="progress-bar" :style="{ width: task.progress + '%' }"></div>
+                                    </div>
+                                </template>
+
                                 <div class="text-danger" style="font-size:12px;margin-top:4px;" v-if="task.error">
                                     {{ task.error }}
                                 </div>
                             </div>
-                            <span class="status-badge" :class="'status-' + task.status">
+                            <span class="status-badge" :class="'status-' + (task.is_playlist && (task.status === 'downloading' || task.status === 'starting') ? 'playlist' : task.status)">
                                 <template v-if="task.status === 'queued'">排队中</template>
+                                <template v-else-if="task.status === 'starting' && task.is_playlist">📂 解析中</template>
                                 <template v-else-if="task.status === 'starting'">启动中</template>
+                                <template v-else-if="task.status === 'downloading' && task.is_playlist">📥 下载合集</template>
                                 <template v-else-if="task.status === 'downloading'">下载中</template>
                                 <template v-else-if="task.status === 'processing'">处理中</template>
+                                <template v-else-if="task.status === 'completed' && task.is_playlist">✅ 合集完成</template>
                                 <template v-else-if="task.status === 'completed'">✅ 完成</template>
                                 <template v-else-if="task.status === 'failed'">❌ 失败</template>
                             </span>
@@ -855,6 +895,7 @@
                     socket.value.on('progress_update', (task) => {
                         const idx = tasks.value.findIndex(t => t.id === task.id);
                         if (idx >= 0) {
+                            // 深度合并，保留已有字段（如 url），覆盖新字段
                             tasks.value[idx] = { ...tasks.value[idx], ...task };
                         } else {
                             tasks.value.push(task);
@@ -863,7 +904,8 @@
                         if (task.title) {
                             const divider = allLogs.find(l => l.task_id === task.id && l.level === 'divider');
                             if (divider) {
-                                divider.message = `── ${task.title} ──`;
+                                const prefix = task.is_playlist ? '📂 ' : '';
+                                divider.message = `── ${prefix}${task.title} ──`;
                             }
                         }
                     });
@@ -877,7 +919,8 @@
                         if (task.title) {
                             const divider = allLogs.find(l => l.task_id === task.id && l.level === 'divider');
                             if (divider) {
-                                divider.message = `── ${task.title} ──`;
+                                const prefix = task.is_playlist ? '📂 ' : '';
+                                divider.message = `── ${prefix}${task.title} ──`;
                             }
                         }
                     });
@@ -893,11 +936,12 @@
                             const tag = task
                                 ? (task.title || task.url || tid)
                                 : tid.substring(0, 8);
+                            const prefix = (task && task.is_playlist) ? '📂 ' : '';
                             allLogs.push({
                                 time: '',
                                 level: 'divider',
                                 tag: '',
-                                message: `── ${tag} ──`,
+                                message: `── ${prefix}${tag} ──`,
                                 task_id: tid,
                             });
                         }
