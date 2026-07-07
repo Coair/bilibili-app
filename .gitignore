@@ -1,1 +1,28 @@
-downloads
+# --- 敏感个人信息 ---
+config.json
+history.json
+
+# --- 下载输出目录 ---
+output/
+downloads/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# --- 虚拟环境 ---
+venv/
+.venv/
+env/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+/history.json
+/config.json
