@@ -489,6 +489,150 @@
             user-select: none;
         }
         .log-toggle:hover { color: var(--primary-hover); }
+
+        /* 视频预览卡片 */
+        .preview-card {
+            display: flex;
+            gap: 14px;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            margin-bottom: 10px;
+            transition: var(--transition);
+        }
+        .preview-card:hover { border-color: #d1d5db; }
+        .preview-thumb {
+            width: 160px;
+            height: 90px;
+            border-radius: 6px;
+            object-fit: cover;
+            background: #e5e7eb;
+            flex-shrink: 0;
+        }
+        .preview-info { flex: 1; min-width: 0; }
+        .preview-title {
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.4;
+            margin-bottom: 6px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .preview-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .preview-meta span { display: inline-flex; align-items: center; gap: 4px; }
+        .preview-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .preview-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+        .badge-playlist { background: #ede9fe; color: #5b21b6; }
+        .badge-single { background: #dbeafe; color: #1e40af; }
+
+        /* 合集勾选列表 */
+        .playlist-selector {
+            max-height: 360px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            margin-top: 10px;
+        }
+        .playlist-selector::-webkit-scrollbar { width: 4px; }
+        .playlist-selector::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+            border-radius: 2px;
+        }
+        .playlist-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #f3f4f6;
+            cursor: pointer;
+            transition: var(--transition);
+            font-size: 13px;
+        }
+        .playlist-item:hover { background: #f9fafb; }
+        .playlist-item:last-child { border-bottom: none; }
+        .playlist-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--primary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .playlist-item-index {
+            color: var(--text-secondary);
+            font-size: 12px;
+            min-width: 28px;
+            text-align: right;
+        }
+        .playlist-item-title {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .playlist-item-duration {
+            font-size: 11px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+        .playlist-select-all {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--primary);
+            cursor: pointer;
+            user-select: none;
+            border-bottom: 1px solid var(--border);
+            background: var(--primary-light);
+        }
+        .playlist-select-all:hover { background: rgba(251,114,153,0.15); }
+        .playlist-select-all input { accent-color: var(--primary); }
+
+        /* 解析状态 */
+        .parse-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding: 8px 0;
+        }
+        .parse-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #e5e7eb;
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -537,6 +681,97 @@
                             <span style="font-size:14px;font-weight:500;">
                                 <i class="ri-music-line" style="color:var(--primary);"></i> 仅下载音频（提取 MP3）
                             </span>
+                        </div>
+                    </div>
+
+                    <!-- 高级选项 -->
+                    <div class="form-group" style="margin-top:2px;">
+                        <div class="advanced-toggle" @click="showAdvanced = !showAdvanced" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);user-select:none;padding:4px 0;">
+                            <i :class="showAdvanced ? 'ri-arrow-down-s-line' : 'ri-arrow-right-s-line'"></i>
+                            <i class="ri-settings-3-line"></i> 高级选项
+                            <span v-if="quality !== 'auto' || codec !== 'auto' || speedup" style="background:var(--primary);color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;">已修改</span>
+                        </div>
+                        <div v-if="showAdvanced" class="advanced-panel" style="margin-top:10px;padding:14px;background:#f9fafb;border-radius:8px;border:1px solid var(--border);">
+                            <div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:12px;">
+                                <div style="flex:1;min-width:160px;">
+                                    <label class="form-label">画质 / 分辨率</label>
+                                    <select class="form-input" v-model="quality" :disabled="audioOnly" style="cursor:pointer;">
+                                        <option value="auto">自动（最高画质）</option>
+                                        <option value="4320">8K 超高清</option>
+                                        <option value="2160">4K 超清</option>
+                                        <option value="1080">1080P 高清</option>
+                                        <option value="720">720P 高清</option>
+                                        <option value="480">480P 清晰</option>
+                                        <option value="360">360P 流畅</option>
+                                    </select>
+                                </div>
+                                <div style="flex:1;min-width:160px;">
+                                    <label class="form-label">视频编码</label>
+                                    <select class="form-input" v-model="codec" :disabled="audioOnly" style="cursor:pointer;">
+                                        <option value="auto">自动</option>
+                                        <option value="avc">H.264 (AVC) — 兼容性最好</option>
+                                        <option value="hevc">H.265 (HEVC) — 体积更小</option>
+                                        <option value="av1">AV1 — 最新编码</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="toggle-row">
+                                <label class="toggle">
+                                    <input type="checkbox" v-model="speedup">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span style="font-size:13px;font-weight:500;">
+                                    <i class="ri-speed-up-line" style="color:var(--success);"></i> 下载加速（并发分片，无需额外安装）
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="btn-row" style="margin-bottom:10px;">
+                        <button class="btn btn-secondary" @click="parseVideo" :disabled="!urlInput.trim() || isParsing">
+                            <i class="ri-search-eye-line"></i> {{ isParsing ? '解析中...' : '预览视频信息' }}
+                        </button>
+                    </div>
+
+                    <!-- 解析结果：单视频预览 -->
+                    <div v-if="parseResult && !parseResult.is_playlist" class="preview-card fade-in">
+                        <img class="preview-thumb" :src="parseResult.thumbnail" @error="$event.target.style.display='none'" alt="封面">
+                        <div class="preview-info">
+                            <div class="preview-title">{{ parseResult.title }}</div>
+                            <div class="preview-meta">
+                                <span class="preview-badge badge-single">📹 单视频</span>
+                                <span v-if="parseResult.uploader"><i class="ri-user-line"></i> {{ parseResult.uploader }}</span>
+                                <span v-if="parseResult.duration"><i class="ri-time-line"></i> {{ formatDuration(parseResult.duration) }}</span>
+                                <span v-if="parseResult.view_count"><i class="ri-eye-line"></i> {{ formatCount(parseResult.view_count) }}</span>
+                            </div>
+                            <div class="preview-desc" v-if="parseResult.description">{{ parseResult.description }}</div>
+                        </div>
+                    </div>
+
+                    <!-- 解析结果：合集勾选列表 -->
+                    <div v-if="parseResult && parseResult.is_playlist" class="fade-in" style="margin-bottom:10px;">
+                        <div class="preview-card">
+                            <img class="preview-thumb" :src="parseResult.thumbnail" @error="$event.target.style.display='none'" alt="封面">
+                            <div class="preview-info">
+                                <div class="preview-title">{{ parseResult.playlist_title }}</div>
+                                <div class="preview-meta">
+                                    <span class="preview-badge badge-playlist">📂 合集 · {{ parseResult.total }} 个视频</span>
+                                    <span v-if="parseResult.uploader"><i class="ri-user-line"></i> {{ parseResult.uploader }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="playlist-selector">
+                            <div class="playlist-select-all" @click="toggleSelectAll">
+                                <input type="checkbox" :checked="isAllSelected">
+                                <span>{{ isAllSelected ? '取消全选' : '全选' }}（已选 {{ selectedCount }}/{{ parseResult.total }}）</span>
+                            </div>
+                            <div class="playlist-item" v-for="item in parseResult.items" :key="item.index"
+                                 @click="togglePlaylistItem(item.index)">
+                                <input type="checkbox" :checked="playlistSelection[item.index]">
+                                <span class="playlist-item-index">{{ item.index + 1 }}</span>
+                                <span class="playlist-item-title">{{ item.title }}</span>
+                                <span class="playlist-item-duration" v-if="item.duration">{{ formatDuration(item.duration) }}</span>
+                            </div>
                         </div>
                     </div>
 
@@ -744,11 +979,25 @@
                 const activeTab = ref('download');
                 const urlInput = ref('');
                 const audioOnly = ref(false);
+                const quality = ref('auto');
+                const codec = ref('auto');
+                const speedup = ref(false);
+                const showAdvanced = ref(false);
                 const tasks = ref([]);
                 const history = ref([]);
                 const config = reactive({ download_dir: '', cookie_file: '' });
                 const settingsSaved = ref(false);
                 const socket = ref(null);
+
+                // 视频解析
+                const parseResult = ref(null);
+                const isParsing = ref(false);
+                const playlistSelection = reactive({});  // { index: true/false }
+                const selectedCount = computed(() => Object.values(playlistSelection).filter(v => v).length);
+                const isAllSelected = computed(() => {
+                    if (!parseResult.value || !parseResult.value.is_playlist) return false;
+                    return selectedCount.value === parseResult.value.total && parseResult.value.total > 0;
+                });
 
                 // 全局日志：[{time, level, tag, message}, ...]
                 const allLogs = reactive([]);
@@ -801,6 +1050,67 @@
                     }
                 }
 
+                // ---------- 视频解析 ----------
+                async function parseVideo() {
+                    const lines = urlInput.value.split('\n').map(l => l.trim()).filter(l => l);
+                    if (lines.length === 0) return;
+
+                    isParsing.value = true;
+                    parseResult.value = null;
+                    // 清空勾选状态
+                    Object.keys(playlistSelection).forEach(k => delete playlistSelection[k]);
+
+                    try {
+                        const res = await fetch('/api/parse', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ url: lines[0] }),
+                        });
+                        const data = await res.json();
+                        if (data.error) {
+                            alert(data.error);
+                            return;
+                        }
+                        parseResult.value = data;
+
+                        // 合集：默认全选
+                        if (data.is_playlist && data.items) {
+                            data.items.forEach(item => {
+                                playlistSelection[item.index] = true;
+                            });
+                        }
+                    } catch (e) {
+                        alert('解析失败: ' + e.message);
+                    } finally {
+                        isParsing.value = false;
+                    }
+                }
+
+                function toggleSelectAll() {
+                    if (!parseResult.value || !parseResult.value.is_playlist) return;
+                    const newVal = !isAllSelected.value;
+                    parseResult.value.items.forEach(item => {
+                        playlistSelection[item.index] = newVal;
+                    });
+                }
+
+                function togglePlaylistItem(index) {
+                    playlistSelection[index] = !playlistSelection[index];
+                }
+
+                function formatDuration(seconds) {
+                    if (!seconds) return '';
+                    const m = Math.floor(seconds / 60);
+                    const s = seconds % 60;
+                    return `${m}:${String(s).padStart(2, '0')}`;
+                }
+
+                function formatCount(num) {
+                    if (!num) return '';
+                    if (num >= 10000) return (num / 10000).toFixed(1) + '万';
+                    return num.toString();
+                }
+
                 async function startDownload() {
                     const lines = urlInput.value.split('\n').map(l => l.trim()).filter(l => l);
                     if (lines.length === 0) return;
@@ -812,6 +1122,12 @@
                             body: JSON.stringify({
                                 urls: lines,
                                 audio_only: audioOnly.value,
+                                quality: quality.value,
+                                codec: codec.value,
+                                speedup: speedup.value,
+                                selected_indices: parseResult.value && parseResult.value.is_playlist
+                                    ? Object.keys(playlistSelection).filter(k => playlistSelection[k]).map(Number)
+                                    : null,
                             }),
                         });
                         const data = await res.json();
@@ -984,6 +1300,15 @@
                     activeTab,
                     urlInput,
                     audioOnly,
+                    quality,
+                    codec,
+                    speedup,
+                    showAdvanced,
+                    parseResult,
+                    isParsing,
+                    playlistSelection,
+                    selectedCount,
+                    isAllSelected,
                     tasks: computed(() => [...tasks.value].reverse()),
                     history,
                     config,
@@ -994,6 +1319,11 @@
                     formatSize,
                     loadConfig,
                     saveSettings,
+                    parseVideo,
+                    toggleSelectAll,
+                    togglePlaylistItem,
+                    formatDuration,
+                    formatCount,
                     startDownload,
                     removeTask,
                     clearCompletedTasks,

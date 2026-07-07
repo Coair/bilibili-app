@@ -2,17 +2,20 @@ import os
 import io
 import json
 import logging
+import re
 import threading
 import time
 import uuid
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO
 import yt_dlp
+import requests
 
 app = Flask(__name__, static_folder='frontend/dist', static_url_path='')
 CORS(app)
@@ -145,7 +148,52 @@ class TaskLogger:
                 emit_log(task_id, level, msg)
         return _Handler()
 
-def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file, skip_progress=False):
+# ---------- 画质/编码映射 ----------
+# 画质选项 → yt-dlp height filter
+QUALITY_HEIGHT_MAP = {
+    'auto': 0,       # 0 表示不限制
+    '4320': 4320,    # 8K
+    '2160': 2160,    # 4K
+    '1080': 1080,    # 1080P
+    '720': 720,
+    '480': 480,
+    '360': 360,
+}
+
+# 编码选项 → yt-dlp vcodec filter
+CODEC_FILTER_MAP = {
+    'auto': '',          # 不限制
+    'avc': 'avc',        # H.264
+    'hevc': 'hevc',      # H.265
+    'av1': 'av01',       # AV1
+}
+
+def _build_format_string(audio_only, quality='auto', codec='auto'):
+    """根据画质和编码选项构建 yt-dlp format 字符串"""
+    if audio_only:
+        return 'bestaudio/best'
+
+    height = QUALITY_HEIGHT_MAP.get(quality, 0)
+    vcodec = CODEC_FILTER_MAP.get(codec, '')
+
+    # 构建 video selector
+    video_sel = 'bestvideo'
+    if height > 0:
+        video_sel += f'[height<={height}]'
+    if vcodec:
+        video_sel += f'[vcodec^={vcodec}]'
+
+    # 构建 audio selector（同样限制高度以保证能匹配到对应的音频流）
+    audio_sel = 'bestaudio'
+    if height > 0:
+        audio_sel += f'[height<={height}]'
+
+    # 最终格式串: video+audio 合并，回退到 best
+    return f'{video_sel}+{audio_sel}/best'
+
+
+def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file, skip_progress=False,
+                    quality='auto', codec='auto', speedup=False):
     """构建 yt-dlp 选项（共用）。skip_progress=True 时 progress_hook 对合集任务跳过"""
     outtmpl = os.path.join(download_dir, '%(title)s.%(ext)s')
     ydl_opts = {
@@ -154,7 +202,11 @@ def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file, skip_progres
         'merge_output_format': 'mp4',
         'windowsfilenames': True,
         'logger': logging.getLogger(f'yt-dlp-{task_id}'),
+        'format': _build_format_string(audio_only, quality, codec),
     }
+    # 下载加速：利用 B站视频分片特性，并发下载多个分片
+    if speedup:
+        ydl_opts['concurrent_fragment_downloads'] = 8
     if cookie_file:
         if os.path.exists(cookie_file):
             ydl_opts['cookiefile'] = cookie_file
@@ -170,14 +222,11 @@ def _build_ydl_opts(task_id, download_dir, audio_only, cookie_file, skip_progres
             except Exception as e:
                 emit_log(task_id, 'warning', f'Cookie 处理失败: {e}')
     if audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }]
-    else:
-        ydl_opts['format'] = 'bestvideo+bestaudio/best'
     return ydl_opts
 
 def _setup_logger(task_id):
@@ -252,8 +301,12 @@ def _find_downloaded_file(download_dir, title, ext, info):
         pass
     return candidate  # 返回候选路径，调用方自己判断是否存在
 
-def download_worker(task_id, url, download_dir, audio_only, cookie_file):
-    """后台下载线程（支持单视频、合集、收藏夹、播放列表）"""
+def download_worker(task_id, url, download_dir, audio_only, cookie_file,
+                    quality='auto', codec='auto', speedup=False,
+                    selected_indices=None):
+    """后台下载线程（支持单视频、合集、收藏夹、播放列表）
+    selected_indices: 合集模式下仅下载指定索引的视频（list of int），None 表示全量下载
+    """
     with task_lock:
         if task_id not in download_tasks:
             return
@@ -262,7 +315,8 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
 
     emit_log(task_id, 'info', f'开始解析: {url}')
 
-    ydl_opts = _build_ydl_opts(task_id, download_dir, audio_only, cookie_file)
+    ydl_opts = _build_ydl_opts(task_id, download_dir, audio_only, cookie_file,
+                               quality=quality, codec=codec, speedup=speedup)
     logger = _setup_logger(task_id)
 
     try:
@@ -284,6 +338,23 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                 total = len(entries)
                 emit_log(task_id, 'info', f'📂 检测到合集/收藏夹: {playlist_title}（共 {total} 个视频）')
 
+                # 合集勾选：过滤选中项
+                if selected_indices is not None and isinstance(selected_indices, list) and len(selected_indices) > 0:
+                    index_set = set(selected_indices)
+                    filtered_entries = [(i, e) for i, e in enumerate(entries) if i in index_set and e is not None]
+                    if not filtered_entries:
+                        emit_log(task_id, 'warning', '没有选中任何视频，下载已取消')
+                        with task_lock:
+                            if task_id in download_tasks:
+                                download_tasks[task_id]['status'] = 'failed'
+                                download_tasks[task_id]['error'] = '没有选中任何视频'
+                        return
+                    actual_total = len(filtered_entries)
+                    emit_log(task_id, 'info', f'已选择 {actual_total}/{total} 个视频进行下载')
+                else:
+                    filtered_entries = [(i, e) for i, e in enumerate(entries) if e is not None]
+                    actual_total = len(filtered_entries)
+
                 # 在父任务所在目录下创建子目录
                 playlist_dir = os.path.join(download_dir, _safe_filename(playlist_title))
                 os.makedirs(playlist_dir, exist_ok=True)
@@ -294,7 +365,7 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                         t = download_tasks[task_id]
                         t['title'] = playlist_title
                         t['is_playlist'] = True
-                        t['playlist_total'] = total
+                        t['playlist_total'] = actual_total
                         t['playlist_completed'] = 0
                         t['playlist_progress'] = 0  # 合集整体进度
                         t['progress'] = 0            # 当前视频进度（由 progress_hook 更新）
@@ -302,25 +373,25 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                 socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
                 completed_count = 0
-                for idx, entry in enumerate(entries):
-                    if entry is None:
-                        continue
+                display_order = 1
+                for orig_idx, entry in filtered_entries:
                     entry_url = entry.get('webpage_url') or entry.get('url') or entry.get('id', '')
-                    entry_title = entry.get('title', f'第{idx+1}个视频')
+                    entry_title = entry.get('title', f'第{orig_idx+1}个视频')
 
-                    emit_log(task_id, 'info', f'[{idx+1}/{total}] {entry_title}')
+                    emit_log(task_id, 'info', f'[{display_order}/{actual_total}] {entry_title}')
                     # 更新当前视频信息
                     with task_lock:
                         if task_id in download_tasks:
                             t = download_tasks[task_id]
                             t['progress'] = 0
-                            t['current_video'] = f'{idx+1}/{total}'
+                            t['current_video'] = f'{display_order}/{actual_total}'
                             t['current_title'] = entry_title
                             t['status'] = 'downloading'
                     socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
-                    # 当前视频使用带 skip_progress=True 的选项，让 progress_hook 正常更新 progress
-                    sub_opts = _build_ydl_opts(task_id, playlist_dir, audio_only, cookie_file)
+                    # 当前视频
+                    sub_opts = _build_ydl_opts(task_id, playlist_dir, audio_only, cookie_file,
+                                               quality=quality, codec=codec, speedup=speedup)
                     sub_opts['logger'] = logging.getLogger(f'yt-dlp-{task_id}')
 
                     try:
@@ -335,11 +406,12 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                         emit_log(task_id, 'error', f'  ❌ 下载失败: {e}')
 
                     completed_count += 1
+                    display_order += 1
                     with task_lock:
                         if task_id in download_tasks:
                             t = download_tasks[task_id]
                             t['playlist_completed'] = completed_count
-                            t['playlist_progress'] = round((completed_count / total) * 100, 1)
+                            t['playlist_progress'] = round((completed_count / actual_total) * 100, 1)
                     socketio.emit('progress_update', dict(download_tasks.get(task_id, {})))
 
                 # 全部完成
@@ -349,8 +421,8 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                         t['status'] = 'completed'
                         t['progress'] = 100
                         t['playlist_progress'] = 100
-                        t['playlist_completed'] = total
-                emit_log(task_id, 'info', f'✅ 合集下载完成！共 {total} 个视频，保存至: {playlist_dir}')
+                        t['playlist_completed'] = actual_total
+                emit_log(task_id, 'info', f'✅ 合集下载完成！共 {actual_total} 个视频，保存至: {playlist_dir}')
 
                 # 合集只存一条历史记录
                 record = {
@@ -368,7 +440,7 @@ def download_worker(task_id, url, download_dir, audio_only, cookie_file):
                     'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'status': 'completed',
                     'is_playlist': True,
-                    'playlist_total': total,
+                    'playlist_total': actual_total,
                 }
                 with history_lock:
                     history = load_history()
@@ -442,11 +514,151 @@ def update_config():
     save_config(config)
     return jsonify({"success": True, "config": config})
 
+# ---------- 封面代理（解决 B站图片防盗链） ----------
+@app.route('/api/thumbnail')
+def proxy_thumbnail():
+    """代理 B站封面图片，绕过 Referer 防盗链"""
+    target_url = request.args.get('url', '')
+    if not target_url:
+        return '', 400
+
+    try:
+        headers = {
+            'Referer': 'https://www.bilibili.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        resp = requests.get(target_url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            content_type = resp.headers.get('Content-Type', 'image/jpeg')
+            return Response(resp.content, content_type=content_type)
+        return '', resp.status_code
+    except Exception:
+        return '', 500
+
+# ---------- 视频信息解析 ----------
+def _normalize_url(url):
+    """智能补全 B站链接，并转换为 yt-dlp 可识别的格式"""
+    url = url.strip().strip('/')
+    if not url:
+        return url
+    if not url.startswith('http'):
+        if url.upper().startswith('BV'):
+            url = f'https://www.bilibili.com/video/{url}'
+        elif url.lower().startswith('av'):
+            url = f'https://www.bilibili.com/video/{url}'
+        elif url.lower().startswith('ep'):
+            url = f'https://www.bilibili.com/bangumi/play/{url}'
+        elif url.lower().startswith('ss'):
+            url = f'https://www.bilibili.com/bangumi/play/{url}'
+        else:
+            url = f'https://www.bilibili.com/video/{url}'
+
+    # B站合集链接转换：/lists?sid=xxx → /channel/collectiondetail?sid=xxx
+    # yt-dlp 不支持 space.bilibili.com/xxx/lists?sid=xxx 格式
+    # 但支持旧格式 space.bilibili.com/xxx/channel/collectiondetail?sid=xxx
+    m = re.match(
+        r'(https?://space\.bilibili\.com/\d+)/lists\?sid=(\d+).*',
+        url
+    )
+    if m:
+        url = f'{m.group(1)}/channel/collectiondetail?sid={m.group(2)}'
+
+    return url
+
+@app.route('/api/parse', methods=['POST'])
+def parse_video():
+    """解析视频信息（封面、UP主、时长等），不下载"""
+    data = request.json
+    url = data.get('url', '').strip()
+    if not url:
+        return jsonify({"error": "请提供视频链接"}), 400
+
+    url = _normalize_url(url)
+
+    config = load_config()
+    cookie_file = config.get('cookie_file', '')
+
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'windowsfilenames': True,
+        'logger': logging.getLogger('yt-dlp-parse'),
+    }
+    # 添加 cookie
+    if cookie_file:
+        if os.path.exists(cookie_file):
+            ydl_opts['cookiefile'] = cookie_file
+        else:
+            try:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.txt', prefix='bili_cookie_',
+                    delete=False, encoding='utf-8'
+                )
+                tmp.write(cookie_file)
+                tmp.close()
+                ydl_opts['cookiefile'] = tmp.name
+            except Exception:
+                pass
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            # 判断是否为播放列表
+            is_playlist = info.get('_type') == 'playlist' or 'entries' in info
+            entries = info.get('entries', []) if is_playlist else None
+
+            if is_playlist and entries:
+                # 合集/播放列表：返回条目列表
+                playlist_title = info.get('title', '未知列表')
+                items = []
+                for idx, entry in enumerate(entries):
+                    if entry is None:
+                        continue
+                    raw_thumb = entry.get('thumbnail', '')
+                    items.append({
+                        'index': idx,
+                        'title': entry.get('title', f'第{idx+1}个视频'),
+                        'url': entry.get('webpage_url') or entry.get('url') or '',
+                        'duration': entry.get('duration', 0),
+                        'thumbnail': f'/api/thumbnail?url={quote(raw_thumb)}' if raw_thumb else '',
+                        'uploader': entry.get('uploader', ''),
+                        'view_count': entry.get('view_count', 0),
+                    })
+                raw_thumb = info.get('thumbnail', '')
+                return jsonify({
+                    "is_playlist": True,
+                    "playlist_title": playlist_title,
+                    "total": len(items),
+                    "items": items,
+                    "thumbnail": f'/api/thumbnail?url={quote(raw_thumb)}' if raw_thumb else '',
+                    "uploader": info.get('uploader', ''),
+                })
+            else:
+                # 单视频
+                raw_thumb = info.get('thumbnail', '')
+                return jsonify({
+                    "is_playlist": False,
+                    "title": info.get('title', '未知标题'),
+                    "thumbnail": f'/api/thumbnail?url={quote(raw_thumb)}' if raw_thumb else '',
+                    "duration": info.get('duration', 0),
+                    "uploader": info.get('uploader', ''),
+                    "view_count": info.get('view_count', 0),
+                    "description": (info.get('description', '') or '')[:200],
+                })
+    except Exception as e:
+        return jsonify({"error": f"解析失败: {str(e)}"}), 500
+
 @app.route('/api/download', methods=['POST'])
 def start_download():
     data = request.json
     urls = data.get('urls', [])
     audio_only = data.get('audio_only', False)
+    quality = data.get('quality', 'auto')
+    codec = data.get('codec', 'auto')
+    speedup = data.get('speedup', False)  # 下载加速开关
+    # 合集勾选：仅下载指定索引的视频（为空则全量下载）
+    selected_indices = data.get('selected_indices', None)
 
     if isinstance(urls, str):
         urls = [urls]
@@ -462,21 +674,9 @@ def start_download():
 
     task_ids = []
     for url in urls:
-        url = url.strip().strip('/')  # 去除前后斜杠
+        url = _normalize_url(url)
         if not url:
             continue
-        # 智能补全：纯 BV号 / av号 / ep号 自动转为完整 B站链接
-        if not url.startswith('http'):
-            if url.upper().startswith('BV'):
-                url = f'https://www.bilibili.com/video/{url}'
-            elif url.lower().startswith('av'):
-                url = f'https://www.bilibili.com/video/{url}'
-            elif url.lower().startswith('ep'):
-                url = f'https://www.bilibili.com/bangumi/play/{url}'
-            elif url.lower().startswith('ss'):
-                url = f'https://www.bilibili.com/bangumi/play/{url}'
-            else:
-                url = f'https://www.bilibili.com/video/{url}'
         task_id = str(uuid.uuid4())[:12]
         with task_lock:
             download_tasks[task_id] = {
@@ -493,10 +693,13 @@ def start_download():
                 'error': '',
                 'fragment': '',
                 'logs': [],
+                'quality': quality,
+                'codec': codec,
+                'speedup': speedup,
             }
         thread = threading.Thread(
             target=download_worker,
-            args=(task_id, url, download_dir, audio_only, cookie_file),
+            args=(task_id, url, download_dir, audio_only, cookie_file, quality, codec, speedup, selected_indices),
             daemon=True
         )
         thread.start()

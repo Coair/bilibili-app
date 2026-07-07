@@ -2,3 +2,4 @@ flask==3.1.0
 flask-cors==5.0.1
 yt-dlp>=2026.7.4
 flask-socketio==5.5.1
+requests>=2.31.0
