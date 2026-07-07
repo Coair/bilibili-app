@@ -657,13 +657,8 @@
                 <div class="card">
                     <div class="card-title"><i class="ri-folder-line"></i>下载目录</div>
                     <div class="form-group">
-                        <div class="btn-row">
-                            <input class="form-input" v-model="config.download_dir" placeholder="选择下载保存目录" style="flex:1;">
-                            <button class="btn btn-secondary btn-sm" @click="selectFolder">
-                                <i class="ri-folder-open-line"></i> 浏览
-                            </button>
-                        </div>
-                        <div class="form-hint">下载的文件将保存在此目录</div>
+                        <input class="form-input" v-model="config.download_dir" placeholder="例如：D:\B站视频  或  C:\Users\你的用户名\Downloads">
+                        <div class="form-hint">请输入完整的文件夹路径。默认保存在程序同目录下的 downloads 文件夹</div>
                     </div>
                 </div>
 
@@ -755,24 +750,6 @@
                     } catch (e) {
                         alert('保存设置失败: ' + e.message);
                     }
-                }
-
-                function selectFolder() {
-                    const input = document.createElement('input');
-                    input.type = 'file';
-                    input.webkitdirectory = true;
-                    input.directory = true;
-                    input.onchange = (e) => {
-                        const files = e.target.files;
-                        if (files.length > 0) {
-                            const path = files[0].webkitRelativePath;
-                            const dir = path.split('/')[0];
-                            config.download_dir = config.download_dir
-                                ? config.download_dir.replace(/[^\\/]*$/, '') + dir
-                                : dir;
-                        }
-                    };
-                    input.click();
                 }
 
                 async function startDownload() {
@@ -964,7 +941,6 @@
                     formatSize,
                     loadConfig,
                     saveSettings,
-                    selectFolder,
                     startDownload,
                     removeTask,
                     clearCompletedTasks,
